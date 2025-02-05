@@ -23,6 +23,7 @@ USER_NAME = "nnt2204"
 hand = [] # list of cards in our hand
 discard = [] # list of cards organized as a stack
 cannot_discard = ""
+last_picked_card = ""
 
 # set up the FastAPI application
 app = FastAPI()
@@ -74,8 +75,8 @@ def process_events(event_text):
     for event_line in event_text.splitlines():
 
         if ((USER_NAME + " draws") in event_line or (USER_NAME + " takes") in event_line):
+            print("Drew " + event_line.split(" ")[-1])
             print("In draw, hand is "+str(hand))
-            print("Drew "+event_line.split(" ")[-1])
             hand.append(event_line.split(" ")[-1])
             hand.sort()
             print("Hand is now "+str(hand))
@@ -107,11 +108,16 @@ async def update_2p_game(update_info: UpdateInfo):
 @app.post("/draw/")
 async def draw(update_info: UpdateInfo):
     global cannot_discard
+    global last_picked_card
     process_events(update_info.event)
 
     # Get the topmost discard card
-    if discard and can_form_meld(discard[-1], hand):
-        cannot_discard = discard[-1]  # Use -1 to get the most recent discard
+    #print ("Discard is "+str(discard))
+    discard_card = discard[0] if discard else None
+    print(f"Discard card: {discard_card}")
+    if discard and can_form_meld(discard[0], hand):
+        cannot_discard = discard[0]  # Use -1 to get the most recent discard
+        last_picked_card = discard[0]
         print(f"Checking if {cannot_discard} can form a meld with hand: {hand}")
         return {"play": "draw discard"}
 
@@ -126,7 +132,6 @@ def get_card_value(card):
     return card_value_map.get(card[0], int(card[0]) if card[0].isdigit() else None)
 
 def can_form_meld(card, hand):
-
     value, suit = card[0], card[1]
     print(f"Checking card: {card} against hand: {hand}")
 
@@ -185,42 +190,87 @@ def card_value(card):
 
 @app.post("/lay-down/")
 async def lay_down(update_info: UpdateInfo):
-    '''Game Server calls this endpoint to conclude player's turn with melding and/or discard.'''
-    global hand, cannot_discard
-
-    # Process game events to update the hand and discard pile
+    ''' Game Server calls this endpoint to conclude player's turn with melding and/or discard.'''
+    # TODO - Your code here - everything from here to end of function
+    global hand
+    global discard
+    global cannot_discard
+    global last_picked_card
     process_events(update_info.event)
-
-    # Count the number of cards of each kind (e.g., 1 of a kind, 2 of a kind, etc.)
     of_a_kind_count = get_of_a_kind_count(hand)
-
-    # Determine if we need to discard
-    discard_string = ""
+    # Assume `last_picked_card` is set when picking up a card from discard
     if (of_a_kind_count[0] + (of_a_kind_count[1] * 2)) > 1:
         print("Need to discard")
-        # Find cards that can be discarded (excluding the last drawn card)
-        discard_options = [card for card in hand if card != cannot_discard]
-        if discard_options:
-            # Choose the highest-value card to discard
-            chosen_discard = max(discard_options, key=lambda x: card_value(x))
-            discard_string = f" discard {chosen_discard}"
-            hand.remove(chosen_discard)  # Remove the discarded card from the hand
-            print(f"Discarding {chosen_discard}. Last drawn card was {cannot_discard}")
+        logging.info("Need to discard")
 
-        cannot_discard = None  # Reset the last drawn card after discarding
+        if (of_a_kind_count[0] > 0):
+            print("Discarding a single card")
+            logging.info("Discarding a single card")
 
-    # Generate melds
+            # Edge case - last card is a single card but was just picked up
+            if (hand[-1] == last_picked_card):
+                print("Skipping last picked-up card:", hand[-1])
+
+            else:
+                # If last card is unique, discard it
+                if (hand[-1][0] != hand[-2][0]):
+                    logging.info("Discarding " + str(hand[-1]))
+                    print("Discarding:", hand[-1])
+                    return {"play": "discard " + hand.pop()}
+
+            # Look for another single unmatched card
+            for i in range(len(hand) - 2, -1, -1):
+                if (hand[i] == last_picked_card):  # Skip if this is the last picked card
+                    continue
+                if (i == 0 or (hand[i][0] != hand[i - 1][0] and hand[i][0] != hand[i + 1][0])):
+                    logging.info("Discarding " + str(hand[i]))
+                    return {"play": "discard " + hand.pop(i)}
+
+        elif (of_a_kind_count[1] >= 1):
+            for i in range(len(hand) - 1, -1, -1):
+                if (hand[i] == last_picked_card or hand[i] == cannot_discard):
+                    continue
+                if get_count(hand, hand[i]) == 2:
+                    logging.info("Discarding " + str(hand[i]))
+                    return {"play": "discard " + hand.pop(i)}
+
+            #logging.info("Discarding " + str(hand[i]))
+            #return {"play": "discard " + hand.pop(i)}
+
+    # We should be able to meld.
+
+    # First, find the card we discard - if needed
+    discard_string = ""
+    print(of_a_kind_count)
+
+    if (of_a_kind_count[0] > 0):
+        if hand[-1][0] != hand[-2][0]:
+            discard_string = " discard " + hand.pop()
+        else:
+            for i in range(len(hand) - 2, -1, -1):
+                if (i == 0):
+                    discard_string = " discard " + hand.pop(0)
+                    break
+                if hand[i][0] != hand[i - 1][0] and hand[i][0] != hand[i + 1][0]:
+                    discard_string = " discard " + hand.pop(i)
+                    break
+
+    # generate our list of meld
     play_string = ""
-    hand.sort(key=lambda c: (c[0], c[1]))  # Sort hand by value and suit
-    last_value = ""
-    for card in hand:
-        if card[0] != last_value:
+    last_card = ""
+    while (len(hand) > 0):
+        card = hand.pop(0)
+        if (str(card)[0] != last_card):
             play_string += "meld "
-        play_string += f"{card} "
-        last_value = card[0]
+        play_string += str(card) + " "
+        last_card = str(card)[0]
 
-    # Return the play string (melds and discard)
-    return {"play": play_string.strip() + discard_string}
+    # remove the extra space, and add in our discard if any
+    play_string = play_string[:-1]
+    play_string += discard_string
+
+    logging.info("Playing: " + play_string)
+    return {"play": play_string}
 
 
 @app.get("/shutdown")
